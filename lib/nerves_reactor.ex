@@ -49,12 +49,12 @@ defmodule NervesReactor do
     for {app, version} <- missing_apps do
       Logger.info("Syncing #{app}:#{version}")
 
-      Logger.info("Unloading #{app}")
-      :ok = :rpc.call(node, Bootstrap, :unload, [app, version])
+      # Logger.info("Unloading #{app}")
+      # :ok = :rpc.call(node, Bootstrap, :unload, [app, version])
 
-      Logger.info("Deletting app path: #{app}")
-      # try to unload the old version if it exits. This doesn't purge the code.
-      _ = :rpc.call(node, :Bootstrap, :remove_codepath, [app, version])
+      # Logger.info("Deletting app path: #{app}")
+      # # try to unload the old version if it exits. This doesn't purge the code.
+      # _ = :rpc.call(node, :Bootstrap, :remove_codepath, [app, version])
 
       # this will be the new codepath for this app on the remote node
       remote_path = :rpc.call(node, Bootstrap, :create_temp_dir, [app, version])
@@ -73,7 +73,7 @@ defmodule NervesReactor do
 
       # Add the newly created codepath to the code server. See below note about this.
       true = :rpc.call(node, Bootstrap, :add_codepath, [Path.join(remote_path, "ebin")])
-      :ok = :rpc.call(node, Bootstrap, :load, [app, version])
+      _ = :rpc.call(node, Bootstrap, :load, [app, version])
 
       # looading the application doesn't load the code, so do that first.
       _ = reload_app(node, app)
@@ -87,7 +87,7 @@ defmodule NervesReactor do
     end
 
     for {app, _} <- missing_apps do
-      {:ok, _} = :rpc.call(node, :application, :ensure_all_started, [app])
+      _= :rpc.call(node, :application, :ensure_all_started, [app])
     end
 
     :ok

@@ -57,3 +57,88 @@ The road to this will include a few steps that i've yet to ponder as of writing 
   * My first idea was to use this, but it only works for bootstraping fresh nodes.
     This means that for Nerves, we'd have to start a second instance of beam, or
     implement some other way of hijacking the current beam process.
+
+## Trying it out
+
+Right now every feature is implemented/tested manually.
+
+> NOTE: whatever project you are adding this application too **does not** need to be the same as the remote end. see below.
+
+To get started, start your "remote" node in distributed mode. This will be the node we **deploy** hot code reloads
+to. in a "real" project, this can be for example, a server deployed on a different machine, a Nerves device, a
+Docker container, a Bakeware app, etc.
+
+```bash
+epmd -deamon
+iex --name remote@hostname.local --cookie democookie
+```
+
+or if you have an already running application:
+
+```elixir
+:os.cmd('epmd -daemon')
+{:ok, _} = Node.start(:"remote@hostname.local")
+true = Node.set_cookie(:democookie)
+```
+
+> NOTE: this works with Erlang as well. I'm using Elixir because I'm more famaliar.
+
+Next, start up your "development" environment. A simple way to test it out, is to start the application in
+this repository:
+
+```bash
+iex --name reactor@hostname.local --cookie democookie -S mix
+```
+
+or you can add
+
+```elixir
+{:nerves_reactor, path: "/path/to/this/repo"}
+```
+
+to your mix deps of an existing project.
+
+However you get it, once you have a console:
+
+```elixir
+true = Node.connect(:"remote@hostname.local")
+NervesReactor.install(:"remote@hostname.local")
+NervesReactor.bootstrap(:"remote@hostname.local")
+```
+
+This will only need to be once per node connection.
+Now you can start modifying any module on your local node, and reload it on the remote node.
+As a simple test, simply paste a module into your local console:
+
+```elixir
+defmodule Test do
+  def hello, do: :world
+end
+```
+
+```elixir
+# reload the module you just created on the remote node
+iex> NervesReactor.reload_module(:"remote@hostname.local", Test)
+{:module, Test}
+iex> :rpc.call(:"remote@hostname.local", Test, :hello, [])
+:world
+```
+
+Next you can update that module locally by pasting it into the console:
+
+```elixir
+defmodule Test do
+  def hello, do: :nou
+end
+```
+
+```elixir
+# reload the module you just created on the remote node
+iex> NervesReactor.reload_module(:"remote@hostname.local", Test)
+{:module, Test}
+iex> :rpc.call(:"remote@hostname.local", Test, :hello, [])
+:nou
+```
+
+This is just a simple example of course, but it's the building blocks of being able to do
+so much more once the tooling is complete.
