@@ -32,7 +32,7 @@ The road to this will include a few steps that i've yet to ponder as of writing 
 * Pretty sure DAP needs an HTTP (ish?) server. Loading cowboy into this app is simple,
   but would complicate things for sure.
 * `Mix.env()` and `Mix.target()` are respected, but I still need to verify this works as expected.
-* `priv` dir is not synced.
+  * `priv` dir is not synced correctly. it works on same arch/libc machines, but the cross compilation problem exits.
   * I think this is a simple fix, but I have a concern regarding `-mode embedded`. There is a TODO in the code.
   * `priv` is important for native C code. One problem I see with this is cross compilation.
     I think Nerves will work out of the box because of how we hijacked the C compiler, but using the Reactor

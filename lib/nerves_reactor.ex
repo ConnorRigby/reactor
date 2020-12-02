@@ -18,6 +18,7 @@ defmodule NervesReactor do
 
     NervesReactor.reload_module(:"remote@remote-hostname.local", SomeMod)
   """
+  require Logger
   alias NervesReactor.Bootstrap
 
   @doc """
@@ -26,8 +27,11 @@ defmodule NervesReactor do
   """
   def install(node) do
     {Bootstrap, bin, beam_path} = :code.get_object_code(Bootstrap)
-    {:module, _} = :rpc.call(node, :code, :load_binary, [Bootstrap, beam_path, bin])
-    :ok
+
+    case :rpc.call(node, :code, :load_binary, [Bootstrap, beam_path, bin]) do
+      {:module, Bootstrap} -> :ok
+      {:badrpc, error} -> {:error, error}
+    end
   end
 
   @doc """
@@ -43,30 +47,33 @@ defmodule NervesReactor do
     missing_apps = calculate_missing_apps(node)
 
     for {app, version} <- missing_apps do
+      Logger.info("Syncing #{app}:#{version}")
+
+      Logger.info("Unloading #{app}")
+      :ok = :rpc.call(node, Bootstrap, :unload, [app, version])
+
+      Logger.info("Deletting app path: #{app}")
       # try to unload the old version if it exits. This doesn't purge the code.
-      _ = :rpc.call(node, Bootstrap, :unload, [app, version])
+      _ = :rpc.call(node, :Bootstrap, :remove_codepath, [app, version])
 
       # this will be the new codepath for this app on the remote node
-      remote_path = :rpc.call(node, Bootstrap, :crete_temp_dir, [app, version])
+      remote_path = :rpc.call(node, Bootstrap, :create_temp_dir, [app, version])
 
       # code and assets to be coppied
-      path = Application.app_dir(app, ["ebin"])
-      files = File.ls!(path)
+      app_dir = :code.lib_dir(app)
+      ebin_path = :code.lib_dir(app, :ebin)
+      priv_path = :code.lib_dir(app, :priv)
 
-      # Copy every file over to the new code path for this applicaction
-      for file <- files do
-        :rpc.call(node, File, :write!, [
-          Path.join(remote_path, file),
-          File.read!(Path.join(path, file))
-        ])
-      end
-
-      # TODO: Add files from `priv` as well. Should look pretty much the same as above.
-      # ISSUE: how to diff priv files statelessly?
-      # ISSUE: `:code.priv_dir(^app)` does not work. possibly because code paths on embedded?
+      # priv is optional
+      # ISSUE: objects in priv can be compiled for the current node's architecture.
+      #        This will be a **huge** problem for Nerves. Unsure how to handle as of right now
+      if File.dir?(priv_path), do: copy_file_or_dir(node, "priv", app_dir, remote_path)
+      # ebin isnt. this dir check isn't really necessary
+      if File.dir?(ebin_path), do: copy_file_or_dir(node, "ebin", app_dir, remote_path)
 
       # Add the newly created codepath to the code server. See below note about this.
-      true = :rpc.call(node, Bootstrap, :add_codepath, [remote_path])
+      true = :rpc.call(node, Bootstrap, :add_codepath, [Path.join(remote_path, "ebin")])
+      :ok = :rpc.call(node, Bootstrap, :load, [app, version])
 
       # looading the application doesn't load the code, so do that first.
       _ = reload_app(node, app)
@@ -76,10 +83,36 @@ defmodule NervesReactor do
       #       and then loading the modules for it
       #       Code paths don't actually get honored in embedded mode after the VM boots anyway
       #       Except for loading the .app file.
-      :ok = :rpc.call(node, Bootstrap, :load, [app, version])
+      Logger.info("Synced #{app}:#{version}")
+    end
+
+    for {app, _} <- missing_apps do
+      {:ok, _} = :rpc.call(node, :application, :ensure_all_started, [app])
     end
 
     :ok
+  end
+
+  # TODO: The remote `File` calls here have a few problems:
+  #       1) they should use the erlang versions
+  #       2) exceptions get swollowed
+  #       3) there was one more thing, but i don't remember it.
+  defp copy_file_or_dir(node, name, local_path, remote_path) do
+    local_object = Path.join(local_path, name)
+    remote_object = Path.join(remote_path, name)
+
+    if File.dir?(local_object) do
+      Logger.info("Creating #{remote_object}")
+      _ = :rpc.call(node, File, :mkdir, [remote_object])
+      local_filenames = File.ls!(local_object)
+
+      for local_filename <- local_filenames do
+        copy_file_or_dir(node, local_filename, local_object, remote_object)
+      end
+    else
+      Logger.info("Coppying #{local_object} to #{remote_object}")
+      :rpc.call(node, File, :write!, [remote_object, File.read!(local_object)])
+    end
   end
 
   @doc """
@@ -118,6 +151,9 @@ defmodule NervesReactor do
   to reload that module as well. If in doubt, it's probably better to use `reload_application/2`
   """
   def reload_module(node, module) do
+    # use `load_binary` becuase a remote device using: `embedded` mode for the code
+    # server fail on using this function:
+    #        {:module, ^module} = :rpc.call(node, :code, :load_file, [module])
     {^module, bin, beam_path} = :code.get_object_code(module)
     {:module, ^module} = :rpc.call(node, :code, :load_binary, [module, beam_path, bin])
   end
@@ -170,12 +206,22 @@ defmodule NervesReactor do
 
   # All apps are created equal (except these ones)
   defp reject_special_cases(apps) do
-    Enum.reject(apps, fn
-      {:mix, _} -> true
-      {:compiler, _} -> true
-      {:stdlib, _} -> true
-      {:kernel, _} -> true
+    apps
+    |> Enum.reject(fn {app, _version} ->
+      # apps that live in sticky directories can't be reloaded without
+      # unsticking them. There's no way to tell if an `app` is sticky, so just
+      # check all the modules. only one is probably required in all reality.
+      {:ok, modules} = :application.get_key(app, :modules)
+      Enum.any?(modules, &:code.is_sticky(&1))
+    end)
+    # This is a special list of apps that we don't want/need to be reloaded.
+    # there's probably discussion to be had here.
+    |> Enum.reject(fn
       {:nerves_reactor, _} -> true
+      {:elixir, _} -> true
+      {:hex, _} -> true
+      {:iex, _} -> true
+      {:logger, _} -> true
       _ -> false
     end)
   end

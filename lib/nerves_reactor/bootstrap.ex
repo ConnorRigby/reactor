@@ -16,8 +16,16 @@ defmodule NervesReactor.Bootstrap do
   end
 
   def unload(app, _version) do
-    # TODO: cleanup codepaths maybe?
-    :application.unload(app)
+    # _ = :application.stop(app)
+    case :application.unload(app) do
+      :ok -> :ok
+      {:error, {:not_loaded, ^app}} -> :ok
+      error -> error
+    end
+  end
+
+  def remove_codepath(app, _version) do
+    :code.del_path(app)
   end
 
   def add_codepath(path) do
@@ -25,7 +33,7 @@ defmodule NervesReactor.Bootstrap do
   end
 
   def create_temp_dir(app, version) do
-    File.mkdir_p("/tmp/reactor/#{app}/#{version}/ebin")
-    "/tmp/reactor/#{app}/#{version}/ebin"
+    File.mkdir_p("/tmp/reactor/#{app}-#{version}")
+    "/tmp/reactor/#{app}-#{version}"
   end
 end
