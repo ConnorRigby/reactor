@@ -74,7 +74,7 @@ defmodule NervesReactor do
       # Add the newly created codepath to the code server. See below note about this.
       true = :rpc.call(node, Bootstrap, :add_codepath, [Path.join(remote_path, "ebin")])
       _ = :rpc.call(node, Bootstrap, :load, [app, version])
-
+      # test
       # looading the application doesn't load the code, so do that first.
       _ = reload_app(node, app)
       # once code is loaded, load the app spec
@@ -87,7 +87,7 @@ defmodule NervesReactor do
     end
 
     for {app, _} <- missing_apps do
-      _= :rpc.call(node, :application, :ensure_all_started, [app])
+      _ = :rpc.call(node, :application, :ensure_all_started, [app])
     end
 
     :ok
