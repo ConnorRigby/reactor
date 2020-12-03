@@ -48,41 +48,7 @@ defmodule NervesReactor do
 
     for {app, version} <- missing_apps do
       Logger.info("Syncing #{app}:#{version}")
-
-      # Logger.info("Unloading #{app}")
-      # :ok = :rpc.call(node, Bootstrap, :unload, [app, version])
-
-      # Logger.info("Deletting app path: #{app}")
-      # # try to unload the old version if it exits. This doesn't purge the code.
-      # _ = :rpc.call(node, :Bootstrap, :remove_codepath, [app, version])
-
-      # this will be the new codepath for this app on the remote node
-      remote_path = :rpc.call(node, Bootstrap, :create_temp_dir, [app, version])
-
-      # code and assets to be coppied
-      app_dir = :code.lib_dir(app)
-      ebin_path = :code.lib_dir(app, :ebin)
-      priv_path = :code.lib_dir(app, :priv)
-
-      # priv is optional
-      # ISSUE: objects in priv can be compiled for the current node's architecture.
-      #        This will be a **huge** problem for Nerves. Unsure how to handle as of right now
-      if File.dir?(priv_path), do: copy_file_or_dir(node, "priv", app_dir, remote_path)
-      # ebin isnt. this dir check isn't really necessary
-      if File.dir?(ebin_path), do: copy_file_or_dir(node, "ebin", app_dir, remote_path)
-
-      # Add the newly created codepath to the code server. See below note about this.
-      true = :rpc.call(node, Bootstrap, :add_codepath, [Path.join(remote_path, "ebin")])
-      _ = :rpc.call(node, Bootstrap, :load, [app, version])
-      # test
-      # looading the application doesn't load the code, so do that first.
-      _ = reload_app(node, app)
-      # once code is loaded, load the app spec
-      # TODO: this could all be done in one spec without adding codepaths
-      #       by just getting the app spec, passing that spec to the remote application:load/1
-      #       and then loading the modules for it
-      #       Code paths don't actually get honored in embedded mode after the VM boots anyway
-      #       Except for loading the .app file.
+      reload_app(node, app, version)
       Logger.info("Synced #{app}:#{version}")
     end
 
@@ -93,26 +59,42 @@ defmodule NervesReactor do
     :ok
   end
 
-  # TODO: The remote `File` calls here have a few problems:
-  #       1) they should use the erlang versions
-  #       2) exceptions get swollowed
-  #       3) there was one more thing, but i don't remember it.
-  defp copy_file_or_dir(node, name, local_path, remote_path) do
-    local_object = Path.join(local_path, name)
-    remote_object = Path.join(remote_path, name)
+  def reload_app(node, app, version) do
+    # Logger.info("Unloading #{app}")
+    # :ok = :rpc.call(node, Bootstrap, :unload, [app, version])
 
-    if File.dir?(local_object) do
-      Logger.info("Creating #{remote_object}")
-      _ = :rpc.call(node, File, :mkdir, [remote_object])
-      local_filenames = File.ls!(local_object)
+    # Logger.info("Deletting app path: #{app}")
+    # # try to unload the old version if it exits. This doesn't purge the code.
+    # _ = :rpc.call(node, :Bootstrap, :remove_codepath, [app, version])
 
-      for local_filename <- local_filenames do
-        copy_file_or_dir(node, local_filename, local_object, remote_object)
-      end
-    else
-      Logger.info("Coppying #{local_object} to #{remote_object}")
-      :rpc.call(node, File, :write!, [remote_object, File.read!(local_object)])
-    end
+    # this will be the new codepath for this app on the remote node
+    remote_path = :rpc.call(node, Bootstrap, :create_temp_dir, [app, version])
+
+    # code and assets to be coppied
+    app_dir = :code.lib_dir(app)
+    ebin_path = :code.lib_dir(app, :ebin)
+    priv_path = :code.lib_dir(app, :priv)
+
+    # priv is optional
+    # ISSUE: objects in priv can be compiled for the current node's architecture.
+    #        This will be a **huge** problem for Nerves. Unsure how to handle as of right now
+    if File.dir?(priv_path), do: copy_file_or_dir(node, "priv", app_dir, remote_path)
+    # ebin isnt. this dir check isn't really necessary
+    if File.dir?(ebin_path), do: copy_file_or_dir(node, "ebin", app_dir, remote_path)
+
+    # Add the newly created codepath to the code server. See below note about this.
+    true = :rpc.call(node, Bootstrap, :add_codepath, [Path.join(remote_path, "ebin")])
+
+    # looading the application doesn't load the code, so do that first.
+    _ = reload_app_modules(node, app)
+
+    # once code is loaded, load the app spec
+    # TODO: this could all be done in one spec without adding codepaths
+    #       by just getting the app spec, passing that spec to the remote application:load/1
+    #       and then loading the modules for it
+    #       Code paths don't actually get honored in embedded mode after the VM boots anyway
+    #       Except for loading the .app file.
+    :rpc.call(node, Bootstrap, :load, [app, version])
   end
 
   @doc """
@@ -122,7 +104,7 @@ defmodule NervesReactor do
   node's copy, the module will be reloaded.
   This does **not** load/unload the application spec.
   """
-  def reload_app(node, app) do
+  def reload_app_modules(node, app) do
     # TODO: There is a potential garbage collection issue here where this only loads the
     #       local modules. If a module was deleted, it won't get cleaned up.
     #       Not a huge deal, but something like:
@@ -150,12 +132,16 @@ defmodule NervesReactor do
   This means if the module you are reloading requires changes in a different module, you will need
   to reload that module as well. If in doubt, it's probably better to use `reload_application/2`
   """
-  def reload_module(node, module) do
+  def reload_module(node, module) when is_atom(module) do
     # use `load_binary` becuase a remote device using: `embedded` mode for the code
     # server fail on using this function:
     #        {:module, ^module} = :rpc.call(node, :code, :load_file, [module])
     {^module, bin, beam_path} = :code.get_object_code(module)
-    {:module, ^module} = :rpc.call(node, :code, :load_binary, [module, beam_path, bin])
+    reload_module(node, module, beam_path, bin)
+  end
+
+  def reload_module(node, module, beam_path, bin) when is_atom(module) and is_binary(bin) do
+    :rpc.call(node, :code, :load_binary, [module, to_charlist(beam_path), bin])
   end
 
   @doc false
@@ -224,5 +210,27 @@ defmodule NervesReactor do
       {:logger, _} -> true
       _ -> false
     end)
+  end
+
+  # TODO: The remote `File` calls here have a few problems:
+  #       1) they should use the erlang versions
+  #       2) exceptions get swollowed
+  #       3) there was one more thing, but i don't remember it.
+  defp copy_file_or_dir(node, name, local_path, remote_path) do
+    local_object = Path.join(local_path, name)
+    remote_object = Path.join(remote_path, name)
+
+    if File.dir?(local_object) do
+      Logger.info("Creating #{remote_object}")
+      _ = :rpc.call(node, File, :mkdir, [remote_object])
+      local_filenames = File.ls!(local_object)
+
+      for local_filename <- local_filenames do
+        copy_file_or_dir(node, local_filename, local_object, remote_object)
+      end
+    else
+      Logger.info("Coppying #{local_object} to #{remote_object}")
+      :rpc.call(node, File, :write!, [remote_object, File.read!(local_object)])
+    end
   end
 end
