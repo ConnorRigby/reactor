@@ -28,6 +28,8 @@ defmodule Mix.Tasks.Reactor do
       # See below for why we watch the ebin directories.
       # ebin_dirs = Mix.Project.build_path() |> Path.join("lib/*/ebin/") |> Path.wildcard()
       ebin_dirs = [Path.expand(".nerves_reactor/")]
+      # create the nerves_reactor cache dir if it doesn't exist
+      _ = for p <- ebin_dirs, do: File.mkdir_p(p)
       src_dirs = Keyword.fetch!(mix_project_config, :elixirc_paths) |> Enum.map(&Path.expand/1)
 
       with {:ok, ebin_pid} <- FileSystem.start_link(dirs: ebin_dirs),
